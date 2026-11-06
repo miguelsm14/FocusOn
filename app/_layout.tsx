@@ -1,59 +1,87 @@
-import FontAwesome from '@expo/vector-icons/FontAwesome';
-import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
-import { useFonts } from 'expo-font';
-import { Stack } from 'expo-router';
+import { useEffect, useState } from 'react';
+import { Platform } from 'react-native';
+import { Stack, router } from 'expo-router';
+import * as Notifications from 'expo-notifications';
 import * as SplashScreen from 'expo-splash-screen';
-import { useEffect } from 'react';
-import 'react-native-reanimated';
+import { StatusBar } from 'expo-status-bar';
+import { initDB } from '@/lib/db';
+import { requestNotificationPermissions } from '@/lib/notifications';
+import { loadSettings } from '@/lib/settings';
+import { useTaskStore } from '@/store/useTaskStore';
 
-import { useColorScheme } from '@/components/useColorScheme';
-
-export {
-  // Catch any errors thrown by the Layout component.
-  ErrorBoundary,
-} from 'expo-router';
-
-export const unstable_settings = {
-  // Ensure that reloading on `/modal` keeps a back button present.
-  initialRouteName: '(tabs)',
-};
-
-// Prevent the splash screen from auto-hiding before asset loading is complete.
 SplashScreen.preventAutoHideAsync();
 
+export { ErrorBoundary } from 'expo-router';
+
 export default function RootLayout() {
-  const [loaded, error] = useFonts({
-    SpaceMono: require('../assets/fonts/SpaceMono-Regular.ttf'),
-    ...FontAwesome.font,
-  });
-
-  // Expo Router uses Error Boundaries to catch errors in the navigation tree.
-  useEffect(() => {
-    if (error) throw error;
-  }, [error]);
+  const loadTasks = useTaskStore((s) => s.loadTasks);
+  const syncRoutines = useTaskStore((s) => s.syncRoutines);
+  const [ready, setReady] = useState(false);
 
   useEffect(() => {
-    if (loaded) {
-      SplashScreen.hideAsync();
+    async function bootstrap() {
+      try {
+        // 1. Init database (sync on native / async on web)
+        await initDB();
+        // 2. Load persisted settings (notifications on/off)
+        await loadSettings();
+        // 3. Load tasks into Zustand store
+        loadTasks();
+        // 4. Request notification permissions (async)
+        await requestNotificationPermissions();
+        // 5. Generate routine copies (and their reminders) for the coming days
+        await syncRoutines();
+      } catch (e) {
+        console.error('[FocusOn] Bootstrap error:', e);
+      } finally {
+        await SplashScreen.hideAsync();
+        setReady(true);
+      }
     }
-  }, [loaded]);
+    bootstrap();
+  }, []);
 
-  if (!loaded) {
-    return null;
-  }
+  // Tocar una notificación abre la tarea correspondiente
+  useEffect(() => {
+    if (!ready || Platform.OS === 'web') return;
 
-  return <RootLayoutNav />;
-}
+    const openTask = (response: Notifications.NotificationResponse | null) => {
+      const taskId = response?.notification.request.content.data?.taskId;
+      if (taskId != null) router.push(`/task/${taskId}`);
+    };
 
-function RootLayoutNav() {
-  const colorScheme = useColorScheme();
+    // App abierta desde una notificación estando cerrada
+    Notifications.getLastNotificationResponseAsync().then((response) => {
+      openTask(response);
+      if (response) Notifications.clearLastNotificationResponse();
+    });
+
+    const sub = Notifications.addNotificationResponseReceivedListener(openTask);
+    return () => sub.remove();
+  }, [ready]);
 
   return (
-    <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
+    <>
+      <StatusBar style="light" />
       <Stack>
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-        <Stack.Screen name="modal" options={{ presentation: 'modal' }} />
+        <Stack.Screen
+          name="task/new"
+          options={{
+            presentation: 'modal',
+            headerShown: false,
+            animation: 'slide_from_bottom',
+          }}
+        />
+        <Stack.Screen
+          name="task/[id]"
+          options={{
+            presentation: 'modal',
+            headerShown: false,
+            animation: 'slide_from_bottom',
+          }}
+        />
       </Stack>
-    </ThemeProvider>
+    </>
   );
 }
