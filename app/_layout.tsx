@@ -8,6 +8,7 @@ import { initDB } from '@/lib/db';
 import { requestNotificationPermissions } from '@/lib/notifications';
 import { loadSettings } from '@/lib/settings';
 import { useTaskStore } from '@/store/useTaskStore';
+import { UndoToast } from '@/components/UndoToast';
 
 SplashScreen.preventAutoHideAsync();
 
@@ -82,6 +83,7 @@ export default function RootLayout() {
           }}
         />
       </Stack>
+      <UndoToast />
     </>
   );
 }

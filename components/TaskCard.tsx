@@ -6,7 +6,7 @@ import {
   View,
   Text,
   StyleSheet,
-  Alert,
+  Dimensions,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
@@ -27,8 +27,8 @@ import {
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const SWIPE_DELETE_THRESHOLD = -70;
-const SWIPE_LIMIT = -80;
+const SCREEN_WIDTH = Dimensions.get('window').width;
+const SWIPE_DELETE_THRESHOLD = -SCREEN_WIDTH * 0.35;
 
 interface Props {
   task: Task;
@@ -39,7 +39,7 @@ interface Props {
 
 export function TaskCard({ task, readonly = false }: Props) {
   const router = useRouter();
-  const { toggleTask, removeTask } = useTaskStore();
+  const { toggleTask, removeTaskWithUndo } = useTaskStore();
   const translateX = useRef(new Animated.Value(0)).current;
   const checkScale = useRef(new Animated.Value(1)).current;
 
@@ -47,7 +47,14 @@ export function TaskCard({ task, readonly = false }: Props) {
   const catConfig = CategoryConfig[task.category] ?? CategoryConfig.general;
   const isOverdue = !isCompleted && task.is_daily === 0 && task.scheduled_date < todayISO();
 
-  // ── Swipe to reveal delete ────────────────────────────────────────────────
+  // ── Swipe left to delete ──────────────────────────────────────────────────
+
+  const removeRef = useRef(() => removeTaskWithUndo(task.id));
+  removeRef.current = () => removeTaskWithUndo(task.id);
+
+  const resetSwipe = () => {
+    Animated.spring(translateX, { toValue: 0, useNativeDriver: true }).start();
+  };
 
   const panResponder = useRef(
     PanResponder.create({
@@ -55,29 +62,29 @@ export function TaskCard({ task, readonly = false }: Props) {
       onMoveShouldSetPanResponder: (_, gs) =>
         Math.abs(gs.dx) > 6 && Math.abs(gs.dx) > Math.abs(gs.dy) * 1.5,
       onPanResponderMove: (_, gs) => {
-        if (gs.dx <= 0) {
-          translateX.setValue(Math.max(gs.dx, SWIPE_LIMIT));
-        }
+        translateX.setValue(Math.min(gs.dx, 0));
       },
       onPanResponderRelease: (_, gs) => {
-        if (gs.dx < SWIPE_DELETE_THRESHOLD) {
-          Animated.spring(translateX, {
-            toValue: SWIPE_LIMIT,
+        if (gs.dx < SWIPE_DELETE_THRESHOLD || gs.vx < -1.2) {
+          Animated.timing(translateX, {
+            toValue: -SCREEN_WIDTH,
+            duration: 180,
             useNativeDriver: true,
-          }).start();
+          }).start(() => removeRef.current());
         } else {
-          Animated.spring(translateX, {
-            toValue: 0,
-            useNativeDriver: true,
-          }).start();
+          resetSwipe();
         }
       },
+      onPanResponderTerminate: resetSwipe,
     })
   ).current;
 
-  const closeSwipe = () => {
-    Animated.spring(translateX, { toValue: 0, useNativeDriver: true }).start();
-  };
+  // Fondo rojo visible solo mientras se desliza
+  const deleteBgOpacity = translateX.interpolate({
+    inputRange: [-60, -1, 0],
+    outputRange: [1, 0, 0],
+    extrapolate: 'clamp',
+  });
 
   // ── Checkbox animation ────────────────────────────────────────────────────
 
@@ -89,35 +96,18 @@ export function TaskCard({ task, readonly = false }: Props) {
     toggleTask(task.id);
   };
 
-  // ── Delete ────────────────────────────────────────────────────────────────
-
-  const handleDelete = () => {
-    Alert.alert(
-      'Eliminar tarea',
-      `¿Seguro que quieres eliminar "${task.title}"?`,
-      [
-        { text: 'Cancelar', style: 'cancel', onPress: closeSwipe },
-        {
-          text: 'Eliminar',
-          style: 'destructive',
-          onPress: () => removeTask(task.id),
-        },
-      ]
-    );
-  };
-
   // ── Render ────────────────────────────────────────────────────────────────
 
   return (
     <View style={styles.outerWrapper}>
-      {/* Delete zone (behind card) */}
+      {/* Fondo de borrado (solo visible al deslizar) */}
       {!readonly && (
-        <View style={styles.deleteZone}>
-          <Pressable onPress={handleDelete} style={styles.deleteBtn} hitSlop={8}>
-            <Ionicons name="trash-outline" size={22} color={Colors.danger} />
-            <Text style={styles.deleteText}>Borrar</Text>
-          </Pressable>
-        </View>
+        <Animated.View
+          pointerEvents="none"
+          style={[styles.deleteZone, { opacity: deleteBgOpacity }]}
+        >
+          <Ionicons name="trash-outline" size={22} color={Colors.danger} />
+        </Animated.View>
       )}
 
       {/* Swipeable card */}
@@ -240,25 +230,15 @@ const styles = StyleSheet.create({
   },
   deleteZone: {
     position: 'absolute',
-    right: 0,
     top: 0,
     bottom: 0,
-    width: 82,
-    alignItems: 'center',
+    left: 0,
+    right: 0,
+    alignItems: 'flex-end',
     justifyContent: 'center',
+    paddingRight: Spacing.lg,
     borderRadius: Radius.lg,
     backgroundColor: Colors.dangerDim,
-    gap: 2,
-  },
-  deleteBtn: {
-    alignItems: 'center',
-    gap: 2,
-    padding: Spacing.sm,
-  },
-  deleteText: {
-    color: Colors.danger,
-    fontSize: FontSize.xs,
-    fontWeight: '600',
   },
   card: {
     flexDirection: 'row',

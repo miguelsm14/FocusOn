@@ -80,8 +80,21 @@ async function removeFutureClones(templateId: number, today: string): Promise<vo
   }
 }
 
+// ─── Borrado con opción de deshacer ───────────────────────────────────────────
+
+/** Tiempo que se muestra el aviso de "Deshacer" antes de borrar de verdad. */
+export const UNDO_DELETE_MS = 4000;
+
+/** Tareas ocultas en la lista porque están pendientes de borrarse. */
+const hiddenIds = new Set<number>();
+let undoTimer: ReturnType<typeof setTimeout> | null = null;
+
+function visible(tasks: DB.Task[]): DB.Task[] {
+  return hiddenIds.size ? tasks.filter((t) => !hiddenIds.has(t.id)) : tasks;
+}
+
 function queryForDate(date: string): DB.Task[] {
-  return date === todayISO() ? DB.getTasksForToday(date) : DB.getTasksByDate(date);
+  return visible(date === todayISO() ? DB.getTasksForToday(date) : DB.getTasksByDate(date));
 }
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -105,6 +118,11 @@ interface TaskStore {
   addTask: (task: DB.NewTask) => Promise<number>;
   editTask: (id: number, updates: Partial<DB.Task>) => Promise<void>;
   removeTask: (id: number) => Promise<void>;
+  /** Oculta la tarea y la borra pasados unos segundos salvo que se deshaga. */
+  removeTaskWithUndo: (id: number) => Promise<void>;
+  undoRemove: () => void;
+  commitPendingRemove: () => Promise<void>;
+  pendingRemove: DB.Task | null;
   toggleTask: (id: number) => Promise<void>;
   resetDay: () => Promise<void>;
   purgeAll: () => Promise<void>;
@@ -124,6 +142,7 @@ interface TaskStore {
 export const useTaskStore = create<TaskStore>((set, get) => ({
   tasks: [],
   currentDate: null,
+  pendingRemove: null,
   dailyLog: [],
   filter: 'all',
   categoryFilter: 'all',
@@ -132,7 +151,7 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
 
   loadTasks: () => {
     try {
-      set({ tasks: DB.getAllTasks(todayISO()), currentDate: null });
+      set({ tasks: visible(DB.getAllTasks(todayISO())), currentDate: null });
     } catch (e) {
       console.error('[FocusOn] Error loading tasks:', e);
     }
@@ -159,7 +178,7 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
   refreshTasks: () => {
     const { currentDate } = get();
     try {
-      set({ tasks: currentDate ? queryForDate(currentDate) : DB.getAllTasks(todayISO()) });
+      set({ tasks: currentDate ? queryForDate(currentDate) : visible(DB.getAllTasks(todayISO())) });
     } catch (e) {
       console.error('[FocusOn] Error refreshing tasks:', e);
     }
@@ -240,6 +259,39 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
       DB.deleteTask(id);
     }
     get().refreshTasks();
+  },
+
+  removeTaskWithUndo: async (id) => {
+    const task = get().tasks.find((t) => t.id === id) ?? DB.getTaskById(id);
+    if (!task) return;
+    // Solo se puede deshacer el último borrado: el anterior se confirma ya.
+    await get().commitPendingRemove();
+    hiddenIds.add(id);
+    set({ pendingRemove: task, tasks: get().tasks.filter((t) => t.id !== id) });
+    undoTimer = setTimeout(() => { get().commitPendingRemove(); }, UNDO_DELETE_MS);
+  },
+
+  undoRemove: () => {
+    const pending = get().pendingRemove;
+    if (!pending) return;
+    if (undoTimer) clearTimeout(undoTimer);
+    undoTimer = null;
+    hiddenIds.delete(pending.id);
+    set({ pendingRemove: null });
+    get().refreshTasks();
+  },
+
+  commitPendingRemove: async () => {
+    const pending = get().pendingRemove;
+    if (!pending) return;
+    if (undoTimer) clearTimeout(undoTimer);
+    undoTimer = null;
+    set({ pendingRemove: null });
+    try {
+      await get().removeTask(pending.id);
+    } finally {
+      hiddenIds.delete(pending.id);
+    }
   },
 
   // ── Toggle complete ───────────────────────────────────────────────────────
